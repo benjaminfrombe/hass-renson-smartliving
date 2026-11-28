@@ -676,7 +676,6 @@ class RensonThermostatConfigCard extends HTMLElement {
           ${this._days().map(([d, lbl]) =>
             `<button class="${d === day ? "sel" : ""}" data-day="${d}">${lbl}</button>`
           ).join("")}
-          <button class="${day === "all" ? "sel" : ""}" data-day="all">${this._t("all")}</button>
         </div>
 
         <div class="sp-list">
