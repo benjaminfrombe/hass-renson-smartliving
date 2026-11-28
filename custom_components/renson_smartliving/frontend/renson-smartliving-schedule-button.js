@@ -69,7 +69,7 @@ class RensonScheduleButton extends HTMLElement {
         button:hover { background: rgba(var(--rgb-primary-text-color, 255, 255, 255), .08); }
         .lblrow {
           display: flex; align-items: center; gap: 8px;
-          font-size: .9em; font-weight: 600; text-align: left;
+          font-size: .9em; font-weight: 600; justify-content: center;
         }
         .lblrow ha-icon { --mdc-icon-size: 18px; color: var(--primary-color); }
         .mini .schedbar { height: 8px; border-radius: 4px; }
