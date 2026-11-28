@@ -11,7 +11,7 @@
  *   climate: climate.badkamer_beneden
  *   lights: [light.x, light.y]
  */
-import { esc, shortName } from "./renson-smartliving-common.js?v=0.2.4";
+import { esc, shortName } from "./renson-smartliving-common.js?v=0.2.5";
 
 class RensonRoomCard extends HTMLElement {
   static getStubConfig() {

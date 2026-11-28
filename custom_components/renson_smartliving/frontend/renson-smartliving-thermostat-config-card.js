@@ -13,7 +13,7 @@
  */
 import {
   t, esc, shortName, dayLabels, dayLabel, scheduleColor,
-} from "./renson-smartliving-common.js?v=0.2.4";
+} from "./renson-smartliving-common.js?v=0.2.5";
 
 class RensonThermostatConfigCard extends HTMLElement {
   static getStubConfig() {
@@ -269,6 +269,140 @@ class RensonThermostatConfigCard extends HTMLElement {
       });
   }
 
+  _sortedRows(dayKey) {
+    return (this._edit[dayKey] || [])
+      .slice()
+      .sort((a, b) => this._sec(a.time) - this._sec(b.time));
+  }
+
+  _fmtSec(sec) {
+    sec = Math.max(0, Math.min(86340, Math.round(sec / 300) * 300));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+
+  // Recompute segment widths/colors from the edit cache and patch the
+  // existing strip DOM in place (no re-render: keeps the drag stable) and
+  // mirror the values into the setpoint rows below the strip.
+  _liveStrip() {
+    const dayKey = this._selectedDay === "all" ? "mon" : this._selectedDay;
+    const list = this._sortedRows(dayKey);
+    const strip = this.renderRoot.querySelector(".heat");
+    if (!strip) return;
+    const heat = [];
+    for (let i = 0; i < list.length; i++) {
+      const from = this._sec(list[i].time);
+      const to = i + 1 < list.length ? this._sec(list[i + 1].time) : 86400;
+      heat.push({ width: (to - from) / 864, temp: list[i].temp });
+    }
+    strip.querySelectorAll("div[data-i]").forEach((el, i) => {
+      const h = heat[i];
+      if (!h) return;
+      el.style.width = `${h.width}%`;
+      el.style.background = this._color(h.temp);
+      let lbl = el.querySelector(".seglabel");
+      if (h.width >= 6) {
+        if (!lbl) {
+          lbl = document.createElement("span");
+          lbl.className = "seglabel";
+          el.appendChild(lbl);
+        }
+        lbl.innerHTML = `${this._fmtTemp(h.temp)}&deg;`;
+      } else if (lbl) lbl.remove();
+    });
+    this.renderRoot.querySelectorAll(".hb").forEach((hb) => {
+      const b = Number(hb.dataset.b);
+      let cum = 0;
+      for (let i = 0; i < b && i < heat.length; i++) cum += heat[i].width;
+      hb.style.left = `${cum}%`;
+    });
+    // Live-mirror into the setpoint rows (time input + temp value).
+    this.renderRoot.querySelectorAll(".sp-row").forEach((row) => {
+      const sp = list[Number(row.dataset.idx)];
+      if (!sp) return;
+      const time = row.querySelector("input[type=time]");
+      if (time && time.value !== sp.time) time.value = sp.time;
+      const val = row.querySelector(".stepper .val");
+      if (val) val.innerHTML = `${this._fmtTemp(sp.temp)}&deg;`;
+    });
+  }
+
+  _wireStrip(dayKey) {
+    const box = this.renderRoot.querySelector(".heatbox");
+    const strip = this.renderRoot.querySelector(".heat");
+    if (!box || !strip) return;
+    const MIN = 600; // minimum segment length: 10 minutes
+    const stop = (el, handlers) => {
+      el.removeEventListener("pointermove", handlers.move);
+      el.removeEventListener("pointerup", handlers.up);
+      el.removeEventListener("pointercancel", handlers.up);
+      this._dragging = false;
+      this._render();
+    };
+    // Boundary handles: drag left/right to move the start time of the
+    // setpoint that begins at that boundary.
+    box.querySelectorAll(".hb").forEach((h) => {
+      h.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const b = Number(h.dataset.b);
+        const sorted = this._sortedRows(dayKey);
+        const sp = sorted[b];
+        if (!sp) return;
+        const orig = this._sec(sp.time);
+        const prev = b > 0 ? this._sec(sorted[b - 1].time) : 0;
+        const next = b + 1 < sorted.length ? this._sec(sorted[b + 1].time) : 86400;
+        const width = strip.getBoundingClientRect().width;
+        const startX = e.clientX;
+        h.setPointerCapture(e.pointerId);
+        h.classList.add("drag");
+        this._dragging = true;
+        const handlers = {
+          move: (ev) => {
+            const ns = Math.max(
+              prev + MIN,
+              Math.min(next - MIN, orig + ((ev.clientX - startX) / width) * 86400)
+            );
+            sp.time = this._fmtSec(ns);
+            this._liveStrip();
+          },
+          up: () => stop(h, handlers),
+        };
+        h.addEventListener("pointermove", handlers.move);
+        h.addEventListener("pointerup", handlers.up);
+        h.addEventListener("pointercancel", handlers.up);
+      });
+    });
+    // Segment body: drag vertically to change that setpoint's temperature.
+    strip.querySelectorAll("div[data-i]").forEach((seg) => {
+      seg.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const i = Number(seg.dataset.i);
+        const sorted = this._sortedRows(dayKey);
+        const sp = sorted[i];
+        if (!sp) return;
+        const orig = sp.temp;
+        const startY = e.clientY;
+        seg.setPointerCapture(e.pointerId);
+        this._dragging = true;
+        let moved = false;
+        const handlers = {
+          move: (ev) => {
+            const dy = startY - ev.clientY;
+            if (!moved && Math.abs(dy) < 5) return;
+            moved = true;
+            sp.temp = Math.max(6, Math.min(32, Math.round((orig + dy / 18) * 2) / 2));
+            this._liveStrip();
+          },
+          up: () => stop(seg, handlers),
+        };
+        seg.addEventListener("pointermove", handlers.move);
+        seg.addEventListener("pointerup", handlers.up);
+        seg.addEventListener("pointercancel", handlers.up);
+      });
+    });
+  }
+
   _render() {
     if (!this.renderRoot) return;
     const entity = this._entity();
@@ -326,11 +460,30 @@ class RensonThermostatConfigCard extends HTMLElement {
           display: flex; height: 20px; border-radius: 10px; overflow: hidden;
           box-shadow: inset 0 0 0 1px rgba(0,0,0,.08);
         }
-        .heat div { height: 100%; transition: background .3s ease; }
+        .heat div { height: 100%; transition: background .3s ease; position: relative; }
+        .heatbox { user-select: none; -webkit-user-select: none; touch-action: none; }
+        .seglabel {
+          position: absolute; inset: 0; display: flex;
+          align-items: center; justify-content: center;
+          font-size: .62em; font-weight: 700; color: rgba(0,0,0,.55);
+          pointer-events: none; white-space: nowrap; overflow: hidden;
+        }
+        .hb {
+          position: absolute; top: -3px; bottom: -3px; width: 14px;
+          margin-left: -7px; cursor: col-resize; z-index: 2;
+        }
+        .hb::after {
+          content: ""; position: absolute; top: 25%; bottom: 25%;
+          left: 50%; width: 3px; margin-left: -1.5px; border-radius: 2px;
+          background: rgba(0,0,0,.3); opacity: 0; transition: opacity .15s ease;
+        }
+        .heatbox:hover .hb::after, .hb.drag::after {
+          opacity: 1; background: var(--primary-color, #03a9f4);
+        }
         .nowmark {
           position: absolute; top: -3px; bottom: -3px; width: 2px;
           background: var(--primary-text-color); opacity: .6;
-          border-radius: 1px;
+          border-radius: 1px; pointer-events: none;
         }
         .nowmark::after {
           content: ""; position: absolute; top: -4px; left: -3px;
@@ -505,10 +658,15 @@ class RensonThermostatConfigCard extends HTMLElement {
         <div class="heatwrap">
           <div class="heatbox">
             <div class="heat">
-              ${heat.map((h) =>
-                `<div style="width:${h.width}%;background:${this._color(h.temp)}"></div>`
+              ${heat.map((h, i) =>
+                `<div data-i="${i}" style="width:${h.width}%;background:${this._color(h.temp)}">${h.width >= 6 ? `<span class="seglabel">${this._fmtTemp(h.temp)}&deg;</span>` : ""}</div>`
               ).join("")}
             </div>
+            ${heat.slice(1).map((h, i) => {
+              let cum = 0;
+              for (let j = 0; j <= i; j++) cum += heat[j].width;
+              return `<div class="hb" data-b="${i + 1}" style="left:${cum}%"></div>`;
+            }).join("")}
             <span class="nowmark" style="left:${this._nowPct()}%"></span>
           </div>
           <div class="axis"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
@@ -524,7 +682,7 @@ class RensonThermostatConfigCard extends HTMLElement {
         <div class="sp-list">
           ${rows.length === 0 ? `<div class="foot">${this._t("no_setpoints")}</div>` : ""}
           ${rows.map((r) => `
-            <div class="sp-row" data-day="${dayKey}" data-i="${r.time}">
+            <div class="sp-row" data-day="${dayKey}" data-idx="${rows.indexOf(r)}">
               <input type="time" value="${r.time}">
               <div class="stepper">
                 <button class="minus">&minus;</button>
@@ -586,7 +744,8 @@ class RensonThermostatConfigCard extends HTMLElement {
     });
     this.renderRoot.querySelectorAll(".sp-row").forEach((row) => {
       const list = edit[row.dataset.day] || [];
-      const sp = list.find((s) => s.time === row.dataset.i);
+      const sorted = list.slice().sort((a, b) => this._sec(a.time) - this._sec(b.time));
+      const sp = sorted[Number(row.dataset.idx)];
       if (!sp) return;
       row.querySelector("input[type=time]").addEventListener("change", (e) => {
         sp.time = e.target.value || "00:00";
@@ -601,11 +760,12 @@ class RensonThermostatConfigCard extends HTMLElement {
         this._render();
       });
       row.querySelector(".del").addEventListener("click", () => {
-        const idx = list.findIndex((s) => s.time === row.dataset.i);
+        const idx = list.indexOf(sp);
         if (idx >= 0) list.splice(idx, 1);
         this._render();
       });
     });
+    this._wireStrip(dayKey);
     this.renderRoot.querySelector(".sch-save")
       .addEventListener("click", () => this._saveSchedule());
     this.renderRoot.querySelector(".cfg-save")
